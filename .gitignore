@@ -1,0 +1,40 @@
+# Trained model weights
+*.pt
+*.pth
+*.bin
+checkpoints/
+
+# Dataset (too large, users download separately)
+data/raw/
+data/processed/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Wandb
+wandb/
+
+# Augmentation outputs (test artifacts)
+augmentation_examples.png
+mel_augmentation_examples.png
+mel_components.png
