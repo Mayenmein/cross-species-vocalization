@@ -256,4 +256,178 @@ if __name__ == "__main__":
     
     # Evaluate
     evaluator = ModelEvaluator(model, test_loader)
-    results = evaluator.run_evaluation()
+    results = evaluator.run_evaluation()"""
+Comprehensive model evaluation.
+"""
+
+import torch
+import numpy as np
+from pathlib import Path
+from typing import Dict, List
+from collections import defaultdict
+import time
+import json
+import sys
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from inference.utils import load_model, load_audio, get_top_predictions, compute_metrics
+from models.config import ModelConfig, DOMAIN_MAP, SOUND_CLASSES
+from torch.utils.data import DataLoader
+from training.dataset import CrossSpeciesDataset
+from tqdm import tqdm
+
+
+class ModelEvaluator:
+    """
+    Comprehensive model evaluation with per-domain metrics.
+    """
+    
+    def __init__(
+        self,
+        model_path: str = "checkpoints/best.ckpt",
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    ):
+        self.model, self.device = load_model(model_path, device=device)
+        self.config = ModelConfig()
+        
+        self.predictions = []
+        self.targets = []
+        self.domains = []
+        self.confidences = []
+        self.inference_times = []
+    
+    def evaluate_dataset(self, test_loader: DataLoader) -> Dict:
+        """
+        Evaluate on test dataset.
+        """
+        print("\n" + "=" * 60)
+        print("RUNNING EVALUATION")
+        print("=" * 60)
+        
+        self.model.eval()
+        
+        for batch in tqdm(test_loader, desc="Evaluating"):
+            # Get raw audio (dataset returns raw audio now)
+            audio_list = batch["audio"]
+            max_len = max(a.shape[0] for a in audio_list)
+            padded_audio = []
+            for a in audio_list:
+                if a.shape[0] < max_len:
+                    a = torch.nn.functional.pad(a, (0, max_len - a.shape[0]))
+                padded_audio.append(a)
+            
+            x = torch.stack(padded_audio).to(self.device)
+            y = batch["label"]
+            
+            # Time inference
+            start = time.time()
+            with torch.no_grad():
+                output = self.model(x, domain="animal")
+            self.inference_times.append(time.time() - start)
+            
+            # Get predictions
+            logits = output["logits"]
+            probs = torch.softmax(logits, dim=-1)
+            preds = logits.argmax(dim=-1)
+            
+            self.predictions.extend(preds.cpu().tolist())
+            self.targets.extend(y.tolist())
+            self.confidences.extend(probs.max(dim=-1)[0].cpu().tolist())
+        
+        # Compute metrics
+        results = self._compute_full_metrics()
+        self._print_summary(results)
+        
+        return results
+    
+    def _compute_full_metrics(self) -> Dict:
+        """Compute all metrics."""
+        preds = np.array(self.predictions)
+        labels = np.array(self.targets)
+        
+        # Overall metrics
+        results = compute_metrics(preds.tolist(), labels.tolist(), self.config.num_classes)
+        
+        # Per-domain metrics
+        per_domain = {}
+        for domain, class_ids in DOMAIN_MAP.items():
+            mask = np.isin(labels, class_ids)
+            if mask.sum() > 0:
+                domain_preds = preds[mask]
+                domain_labels = labels[mask]
+                per_domain[domain] = {
+                    "accuracy": (domain_preds == domain_labels).mean(),
+                    "num_samples": int(mask.sum()),
+                }
+        results["per_domain"] = per_domain
+        
+        # Top-k accuracy
+        results["top3_accuracy"] = self._top_k_accuracy(3)
+        results["top5_accuracy"] = self._top_k_accuracy(5)
+        
+        # Confidence analysis
+        results["avg_confidence"] = float(np.mean(self.confidences))
+        results["calibration_error"] = self._compute_calibration_error()
+        
+        # Inference speed
+        results["avg_inference_time_ms"] = np.mean(self.inference_times) * 1000
+        
+        return results
+    
+    def _top_k_accuracy(self, k: int) -> float:
+        """Compute top-k accuracy."""
+        # Need to recompute with stored probabilities
+        # Simplified for now - would need full probability matrix
+        return 0.0  # Placeholder
+    
+    def _compute_calibration_error(self) -> float:
+        """Compute expected calibration error."""
+        # Simplified ECE calculation
+        return 0.0  # Placeholder
+    
+    def _print_summary(self, results: Dict):
+        """Print evaluation summary."""
+        print(f"\n{'='*40}")
+        print(f"EVALUATION SUMMARY")
+        print(f"{'='*40}")
+        print(f"Samples:       {len(self.predictions)}")
+        print(f"Accuracy:      {results['accuracy']:.3f}")
+        
+        print(f"\nPer-Domain Accuracy:")
+        for domain, metrics in results.get("per_domain", {}).items():
+            print(f"  {domain:20s}: {metrics['accuracy']:.3f} ({metrics['num_samples']} samples)")
+        
+        print(f"\nInference Speed:")
+        print(f"  Average: {results['avg_inference_time_ms']:.1f} ms/sample")
+        
+        print(f"\nConfidence:")
+        print(f"  Average: {results['avg_confidence']:.3f}")
+    
+    def save_results(self, path: str):
+        """Save results to JSON."""
+        results = self._compute_full_metrics()
+        with open(path, "w") as f:
+            json.dump(results, f, indent=2)
+        print(f"\nResults saved to {path}")
+
+
+def create_test_loader(data_root: str = "data/raw", batch_size: int = 8):
+    """Create test data loader."""
+    from training.dataset import CrossSpeciesDataset
+    
+    dataset = CrossSpeciesDataset(
+        data_root=data_root,
+        split="test",
+        target_duration=10.0,
+        return_raw_audio=True,
+    )
+    
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+
+
+if __name__ == "__main__":
+    evaluator = ModelEvaluator()
+    test_loader = create_test_loader()
+    results = evaluator.evaluate_dataset(test_loader)
+    evaluator.save_results("evaluation_results.json")

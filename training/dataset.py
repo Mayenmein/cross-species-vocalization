@@ -1,17 +1,5 @@
-# training/dataset.py
 """
-CrossSpeciesDataset for loading and preprocessing audio data.
-
-Handles ESC-50 and Freesound audio files, converting them to
-mel spectrograms compatible with Whisper's expected input format.
-
-Directory structure expected:
-    data/raw/
-    └── ESC-50/
-        └── ESC-50-master/
-            ├── audio/          # 2000 .wav files
-            └── meta/
-                └── esc50.csv   # Metadata with labels
+CrossSpeciesDataset with sklearn train/test split
 """
 
 import numpy as np
@@ -21,95 +9,38 @@ from typing import Dict, List, Tuple, Optional
 import random
 import warnings
 import os
-
-# Set environment variable BEFORE importing torchaudio
-os.environ["TORCHAUDIO_BACKEND"] = "soundfile"
-
-# Now try to import torch and torchaudio
 import torch
 import torch.nn.functional as F
+from sklearn.model_selection import train_test_split
 
-# Try importing torchaudio, but have a fallback plan
-try:
-    import torchaudio
-    TORCHAUDIO_AVAILABLE = True
-except (ImportError, OSError) as e:
-    print(f"Warning: torchaudio import failed: {e}")
-    print("Will use librosa/soundfile for audio processing")
-    TORCHAUDIO_AVAILABLE = False
+os.environ["TORCHAUDIO_BACKEND"] = "soundfile"
 
+import torchaudio 
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
 class CrossSpeciesDataset(torch.utils.data.Dataset):
     """
     PyTorch Dataset for cross-species audio classification.
-    
-    Loads audio files and returns:
-    - Raw waveform (for MelAugmenter pipeline) OR
-    - Pre-computed mel spectrogram (for direct model input)
-    
-    Supports:
-    - ESC-50 structured data (with esc50.csv metadata)
-    - Freesound hand-picked files (labels inferred from directory names)
-    - Custom mappings for domain-specific classification
     """
     
-    # ESC-50 category to our internal label mapping
     ESC50_TO_INTERNAL = {
-        # Animal sounds
-        "dog": 0,
-        "rooster": 5,
-        "pig": 0,
-        "cow": 0,
-        "frog": 9,
-        "cat": 3,
-        "hen": 5,
-        "insects": 5,
-        "sheep": 0,
-        "crow": 6,
-        
-        # Human non-verbal sounds
-        "coughing": 10,
-        "laughing": 13,
-        "crying_baby": 12,
-        "sneezing": 14,
-        "breathing": 14,
-        
-        # Machinery/Environmental
-        "engine": 15,
-        "train": 15,
-        "airplane": 15,
-        "car_horn": 18,
-        "chainsaw": 16,
-        "siren": 18,
-        "church_bells": 18,
-        "hand_saw": 16,
-        "fireworks": 18,
-        "helicopter": 15,
-        
-        # Other sounds
-        "rain": 19,
-        "sea_waves": 19,
-        "crackling_fire": 17,
-        "wind": 19,
-        "pouring_water": 19,
-        "toilet_flush": 19,
-        "thunderstorm": 18,
-        "clock_alarm": 18,
-        "door_wood_creaks": 17,
-        "mouse_click": 17,
-        "keyboard_typing": 17,
-        "can_opening": 17,
-        "washing_machine": 15,
-        "vacuum_cleaner": 15,
-        "clock_tick": 17,
-        "glass_breaking": 17,
-        "brushing_teeth": 19,
-        "drinking_sipping": 19,
-        "footsteps": 14,
+        # Animal
+        "dog": 0, "rooster": 5, "pig": 0, "cow": 0, "frog": 9,
+        "cat": 3, "hen": 5, "insects": 5, "sheep": 0, "crow": 6,
         "chirping_birds": 5,
-        "water_drops": 19,
+        # Human Health
+        "coughing": 10, "sneezing": 11, "breathing": 12,
+        "crying_baby": 13, "laughing": 16, "footsteps": 17,
+        # Machinery
+        "engine": 18, "train": 18, "airplane": 18, "helicopter": 18,
+        "chainsaw": 19, "hand_saw": 21, "car_horn": 23, "siren": 23,
+        "clock_alarm": 23, "church_bells": 23, "fireworks": 22,
+        # Environmental
+        "rain": 25, "wind": 26, "thunderstorm": 27, "sea_waves": 28,
+        "pouring_water": 28, "water_drops": 28, "toilet_flush": 28,
+        "crackling_fire": 29, "washing_machine": 28, "brushing_teeth": 28,
+        "drinking_sipping": 28,
     }
     
     def __init__(
@@ -123,21 +54,11 @@ class CrossSpeciesDataset(torch.utils.data.Dataset):
         augment_prob: float = 0.5,
         mel_augmenter: Optional[object] = None,
         domain_filter: Optional[str] = None,
-        return_raw_audio: bool = True,  # If True, returns waveform; if False, returns mel
+        return_raw_audio: bool = True,
+        train_split: float = 0.7,
+        val_split: float = 0.15,
+        test_split: float = 0.15,
     ):
-        """
-        Args:
-            data_root: Path to raw data directory
-            split: "train", "val", or "test"
-            target_duration: Pad/trim all audio to this many seconds
-            sample_rate: Target sample rate (Whisper uses 16kHz)
-            n_mels: Number of mel filterbanks (Whisper uses 80)
-            augment: Whether to apply mel augmentations
-            augment_prob: Probability of augmenting each sample
-            mel_augmenter: MelAugmenter instance for augmentation
-            domain_filter: If set, only return samples from this domain
-            return_raw_audio: If True, returns waveform for external mel conversion
-        """
         self.data_root = Path(data_root)
         self.split = split
         self.target_duration = target_duration
@@ -149,51 +70,29 @@ class CrossSpeciesDataset(torch.utils.data.Dataset):
         self.domain_filter = domain_filter
         self.return_raw_audio = return_raw_audio
         
-        # Target number of samples
         self.target_samples = int(target_duration * sample_rate)
         
-        # Initialize audio processing tools
-        self._init_audio_processor()
-        
-        # Load file paths and labels
+        # Load all data
         self.files, self.labels, self.domains = self._load_data()
         
-        # Split indices
-        self._create_split()
+        # Create splits using sklearn
+        self._create_splits(train_split, val_split, test_split)
+        
+        # Apply domain filter
+        if self.domain_filter:
+            self.indices = [
+                i for i in self.indices
+                if self.domains[i] == self.domain_filter
+            ]
         
         print(f"Dataset [{split}]: {len(self.indices)} samples"
               + (f" (domain: {domain_filter})" if domain_filter else ""))
     
-    def _init_audio_processor(self):
-        """Initialize audio processing with proper backend."""
-        if TORCHAUDIO_AVAILABLE and not self.return_raw_audio:
-            # Create mel spectrogram converter using torchaudio
-            self.mel_converter = torchaudio.transforms.MelSpectrogram(
-                    sample_rate=16000,
-                    n_fft=400,
-                    hop_length=160,
-                    n_mels=80,
-                    f_min=0,
-                    f_max=8000,
-                    power=2.0,
-                )
-            
-            # Convert power spectrogram to dB scale
-            self.db_converter = torchaudio.transforms.AmplitudeToDB(
-                stype="power",
-                top_db=80.0,
-            )
-        else:
-            self.mel_converter = None
-            self.db_converter = None
-    
     def _load_data(self) -> Tuple[List[str], List[int], List[str]]:
-        """Load file paths and labels from data directory."""
-        files = []
-        labels = []
-        domains = []
+        """Load file paths and labels."""
+        files, labels, domains = [], [], []
         
-        # Try both directory structures
+        # Load ESC-50
         esc50_paths = [
             self.data_root / "ESC-50-master" / "audio",
             self.data_root / "ESC-50" / "ESC-50-master" / "audio",
@@ -203,46 +102,26 @@ class CrossSpeciesDataset(torch.utils.data.Dataset):
             self.data_root / "ESC-50" / "ESC-50-master" / "meta" / "esc50.csv",
         ]
         
-        esc50_audio = None
-        esc50_meta = None
-        
         for audio_path, meta_path in zip(esc50_paths, esc50_meta_paths):
             if audio_path.exists() and meta_path.exists():
-                esc50_audio = audio_path
-                esc50_meta = meta_path
+                metadata = pd.read_csv(meta_path)
+                for _, row in metadata.iterrows():
+                    filepath = audio_path / row["filename"]
+                    if filepath.exists():
+                        internal_label = self.ESC50_TO_INTERNAL.get(row["category"])
+                        if internal_label is not None:
+                            files.append(str(filepath))
+                            labels.append(internal_label)
+                            domains.append(self._get_domain(internal_label))
                 break
         
-        if esc50_audio is not None and esc50_meta is not None:
-            metadata = pd.read_csv(esc50_meta)
-            
-            for _, row in metadata.iterrows():
-                filename = row["filename"]
-                category = row["category"]
-                filepath = esc50_audio / filename
-                
-                if filepath.exists():
-                    internal_label = self.ESC50_TO_INTERNAL.get(category)
-                    if internal_label is not None:
-                        files.append(str(filepath))
-                        labels.append(internal_label)
-                        domains.append(self._get_domain(internal_label))
-        
-        # Load Freesound data
+        # Load Freesound (if exists)
         freesound_dir = self.data_root / "freesound"
         if freesound_dir.exists():
             for domain_dir in freesound_dir.iterdir():
                 if domain_dir.is_dir():
                     domain_name = domain_dir.name.lower()
-                    
-                    if "whale" in domain_name or "bird" in domain_name:
-                        domain = "animal"
-                    elif "human" in domain_name or "cough" in domain_name:
-                        domain = "human_nonverbal"
-                    elif "machinery" in domain_name or "engine" in domain_name:
-                        domain = "machinery"
-                    else:
-                        domain = "animal"
-                    
+                    domain = self._infer_domain_from_dir(domain_name)
                     for audio_file in domain_dir.glob("*.wav"):
                         label = self._infer_freesound_label(audio_file, domain)
                         if label is not None:
@@ -252,119 +131,126 @@ class CrossSpeciesDataset(torch.utils.data.Dataset):
         
         return files, labels, domains
     
+    def _infer_domain_from_dir(self, dirname: str) -> str:
+        """Infer domain from directory name."""
+        if any(w in dirname for w in ["whale", "bird", "animal", "dog", "cat", "frog"]):
+            return "animal"
+        elif any(w in dirname for w in ["human", "cough", "cry", "laugh", "health"]):
+            return "human_health"
+        elif any(w in dirname for w in ["machinery", "engine", "alarm", "industrial"]):
+            return "machinery"
+        else:
+            return "environmental"
+    
     def _infer_freesound_label(self, filepath: Path, domain: str) -> Optional[int]:
-        """Infer class label from Freesound filename."""
+        """Infer class label from filename."""
         name = filepath.stem.lower()
         
         if domain == "animal":
-            if any(w in name for w in ["whale", "orca", "humpback", "cetacean"]):
-                return 7 if "song" in name or "call" in name else 8
-            if any(w in name for w in ["bird", "nightingale", "songbird", "avian"]):
+            if any(w in name for w in ["whale", "orca", "humpback"]):
+                return 7 if "song" in name else 8
+            if any(w in name for w in ["bird", "nightingale"]):
                 return 5 if "song" in name else 6
-            if any(w in name for w in ["dog", "bark", "canine"]):
-                if any(w in name for w in ["growl", "aggressive", "angry"]):
-                    return 1
-                if any(w in name for w in ["whine", "cry", "distressed"]):
-                    return 2
-                return 0
-            if any(w in name for w in ["cat", "feline", "meow", "kitten"]):
-                return 4 if any(w in name for w in ["hiss", "angry", "defensive"]) else 3
-            if any(w in name for w in ["frog", "toad", "amphibian"]):
+            if any(w in name for w in ["dog", "bark"]):
+                return 1 if "growl" in name else 2 if "whine" in name else 0
+            if any(w in name for w in ["cat", "meow"]):
+                return 4 if "hiss" in name else 3
+            if any(w in name for w in ["frog"]):
                 return 9
             return 0
         
-        elif domain == "human_nonverbal":
-            if any(w in name for w in ["cough", "coughing"]):
-                return 11 if any(w in name for w in ["wet", "phlegm", "chesty"]) else 10
-            if any(w in name for w in ["cry", "sob", "weeping"]):
-                return 12
-            if any(w in name for w in ["laugh", "giggle", "chuckle"]):
+        elif domain == "human_health":
+            if "cough" in name:
+                return 11 if "wet" in name else 10
+            if any(w in name for w in ["cry", "sob"]):
                 return 13
-            if any(w in name for w in ["gasp", "surprise", "shock"]):
-                return 14
+            if "laugh" in name:
+                return 16
+            if "gasp" in name:
+                return 17
             return 10
         
         elif domain == "machinery":
-            if any(w in name for w in ["engine", "motor"]):
-                if any(w in name for w in ["fail", "knock", "bad", "broken"]):
-                    return 16
-                return 15
-            if any(w in name for w in ["bearing", "grind", "scrape"]):
-                return 17
-            if any(w in name for w in ["alarm", "siren", "emergency", "warning"]):
-                return 18
-            if any(w in name for w in ["hydraulic", "leak", "hiss", "pneumatic"]):
-                return 19
-            return 15
+            if "engine" in name:
+                return 19 if any(w in name for w in ["fail", "knock"]) else 18
+            if "bearing" in name:
+                return 20
+            if any(w in name for w in ["alarm", "siren"]):
+                return 23
+            return 18
         
-        return None
+        else:  # environmental
+            if "rain" in name:
+                return 25
+            if "wind" in name:
+                return 26
+            if "thunder" in name:
+                return 27
+            if any(w in name for w in ["water", "river", "stream"]):
+                return 28
+            if "fire" in name:
+                return 29
+            return 25
     
     def _get_domain(self, label: int) -> str:
-        """Get domain string from class label."""
+        """Get domain from class label."""
         if label <= 9:
             return "animal"
-        elif 10 <= label <= 14:
-            return "human_nonverbal"
-        else:
+        elif 10 <= label <= 17:
+            return "human_health"
+        elif 18 <= label <= 24:
             return "machinery"
+        else:
+            return "environmental"
     
-    def _create_split(self):
-        """Create train/val/test split indices."""
+    def _create_splits(self, train_split, val_split, test_split):
+        """Create train/val/test splits using sklearn."""
         n = len(self.files)
         indices = list(range(n))
         
-        # Use deterministic random seed
-        rng = np.random.RandomState(42)
-        rng.shuffle(indices)
+        # First split: train vs temp
+        train_idx, temp_idx = train_test_split(
+            indices, 
+            train_size=train_split, 
+            random_state=42,
+            stratify=self.labels
+        )
         
-        # 70% train, 15% val, 15% test
-        train_end = int(0.70 * n)
-        val_end = int(0.85 * n)
+        # Second split: val vs test from temp
+        val_ratio = val_split / (val_split + test_split)
+        val_idx, test_idx = train_test_split(
+            temp_idx,
+            train_size=val_ratio,
+            random_state=42,
+            stratify=[self.labels[i] for i in temp_idx]
+        )
         
         if self.split == "train":
-            self.indices = indices[:train_end]
+            self.indices = train_idx
         elif self.split == "val":
-            self.indices = indices[train_end:val_end]
+            self.indices = val_idx
         else:
-            self.indices = indices[val_end:]
-        
-        # Apply domain filter
-        if self.domain_filter:
-            self.indices = [
-                i for i in self.indices
-                if self.domains[i] == self.domain_filter
-            ]
+            self.indices = test_idx
     
     def _load_audio(self, filepath: str) -> torch.Tensor:
-        """
-        Load audio file and preprocess to waveform.
-        Uses librosa to avoid torchcodec issues.
-        """
+        """Load audio file."""
         try:
             import librosa
-            # Load audio with librosa (much more reliable on Windows)
             audio_np, sr = librosa.load(filepath, sr=None, mono=True)
-            
-            # Convert to torch tensor [1, samples]
             audio = torch.from_numpy(audio_np).unsqueeze(0).float()
             
-            # Resample if needed
             if sr != self.sample_rate:
-                audio_np_resampled = librosa.resample(
-                    audio_np, orig_sr=sr, target_sr=self.sample_rate
-                )
-                audio = torch.from_numpy(audio_np_resampled).unsqueeze(0).float()
+                audio_np = librosa.resample(audio_np, orig_sr=sr, target_sr=self.sample_rate)
+                audio = torch.from_numpy(audio_np).unsqueeze(0).float()
             
         except Exception as e:
             print(f"Error loading {filepath}: {e}")
-            # Return random noise as fallback
             audio = torch.randn(1, self.target_samples)
             return audio
         
-        # Pad or trim to target duration
+        # Pad or trim
         if audio.shape[1] < self.target_samples:
-            padding = self.target_samples - audio.shape[1]
-            audio = F.pad(audio, (0, padding))
+            audio = F.pad(audio, (0, self.target_samples - audio.shape[1]))
         elif audio.shape[1] > self.target_samples:
             if self.split == "train":
                 start = random.randint(0, audio.shape[1] - self.target_samples)
@@ -374,162 +260,52 @@ class CrossSpeciesDataset(torch.utils.data.Dataset):
         
         return audio
     
-    def _audio_to_mel(self, audio: torch.Tensor) -> torch.Tensor:
-        """Convert audio waveform to log-mel spectrogram."""
-        if self.mel_converter is not None:
-            # Use torchaudio's mel converter
-            if audio.dim() == 1:
-                audio = audio.unsqueeze(0)
-            
-            mel_spec = self.mel_converter(audio)  # [1, n_mels, time]
-            mel_spec_db = self.db_converter(mel_spec)
-            mel_spec_db = (mel_spec_db + 40) / 40  # Rough normalization
-            mel_spec_db = mel_spec_db.squeeze(0)  # [n_mels, time]
-        else:
-            # Fallback: use librosa
-            try:
-                import librosa
-                audio_np = audio.squeeze().numpy()
-                
-                mel_spec = librosa.feature.melspectrogram(
-                    y=audio_np,
-                    sr=self.sample_rate,
-                    n_fft=400,
-                    hop_length=160,
-                    n_mels=self.n_mels,
-                    fmin=0,
-                    fmax=self.sample_rate // 2,
-                    power=2.0,
-                )
-                
-                mel_spec_db = librosa.power_to_db(mel_spec, top_db=80.0)
-                mel_spec_db = (mel_spec_db + 40) / 40
-                mel_spec_db = torch.from_numpy(mel_spec_db).float()
-            except Exception as e:
-                print(f"Error computing mel spectrogram: {e}")
-                # Return random mel spectrogram
-                mel_spec_db = torch.randn(self.n_mels, 100).float()
-        
-        return mel_spec_db
-    
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        """Get a single sample."""
+    def __getitem__(self, idx: int) -> Dict:
         actual_idx = self.indices[idx]
         filepath = self.files[actual_idx]
         label = self.labels[actual_idx]
         domain = self.domains[actual_idx]
         
-        # Load and preprocess audio
         try:
-            audio = self._load_audio(filepath)  # [1, samples]
+            audio = self._load_audio(filepath)
         except Exception as e:
             print(f"Error loading {filepath}: {e}")
-            # Return a different sample as fallback
             return self.__getitem__((idx + 1) % len(self.indices))
         
-        if self.return_raw_audio:
-            # Return raw waveforms for external MelAugmenter pipeline
-            return {
-                "audio": audio.squeeze(0),  # [samples]
-                "mel": None,  # Will be computed by augmenter or collate function
-                "label": torch.tensor(label, dtype=torch.long),
-                "domain": domain,
-                "filepath": filepath,
-            }
-        else:
-            # Convert to mel spectrogram
-            mel = self._audio_to_mel(audio)
-            
-            # Apply mel augmentation during training
-            if self.augment and self.mel_augmenter is not None and random.random() < self.augment_prob:
-                # Add batch dimension for augmenter
-                mel = mel.unsqueeze(0)  # [1, n_mels, time]
-                mel, _ = self.mel_augmenter(mel, None)
-                mel = mel.squeeze(0)  # [n_mels, time]
-            
-            return {
-                "audio": audio.squeeze(0),  # [samples] - kept for reference
-                "mel": mel,  # [n_mels, time]
-                "label": torch.tensor(label, dtype=torch.long),
-                "domain": domain,
-                "filepath": filepath,
-            }
+        return {
+            "audio": audio.squeeze(0),
+            "label": torch.tensor(label, dtype=torch.long),
+            "domain": domain,
+            "filepath": filepath,
+        }
     
     def __len__(self) -> int:
         return len(self.indices)
-    
-    def get_class_distribution(self) -> Dict[int, int]:
-        """Get count of samples per class."""
-        from collections import Counter
-        label_counts = Counter()
-        for idx in self.indices:
-            label_counts[self.labels[idx]] += 1
-        return dict(label_counts)
-    
-    def get_domain_distribution(self) -> Dict[str, int]:
-        """Get count of samples per domain."""
-        from collections import Counter
-        domain_counts = Counter()
-        for idx in self.indices:
-            domain_counts[self.domains[idx]] += 1
-        return dict(domain_counts)
 
 
-# ==================================================
-# Custom collate function for batching
-# ==================================================
 def collate_fn(batch, mel_augmenter=None):
-    """
-    Custom collate function that handles:
-    - Mel conversion from audio if needed
-    - Augmentation application
-    - Padding to same length in batch
-    """
+    """Collate function for batching."""
     audios = [item["audio"] for item in batch]
     labels = torch.stack([item["label"] for item in batch])
     domains = [item["domain"] for item in batch]
     filepaths = [item["filepath"] for item in batch]
     
-    # If mel is already computed, use it
-    if batch[0]["mel"] is not None:
-        mels = [item["mel"] for item in batch]
-        # Pad mels to same time dimension
-        max_time = max(mel.shape[1] for mel in mels)
-        padded_mels = []
-        for mel in mels:
-            if mel.shape[1] < max_time:
-                pad_size = max_time - mel.shape[1]
-                mel = F.pad(mel, (0, pad_size))
-            padded_mels.append(mel)
-        mels = torch.stack(padded_mels)  # [B, n_mels, time]
-    else:
-        # Need to compute mels (this would require the MelAugmenter)
-        # For now, return audios and let the model/training loop handle conversion
-        mels = None
-    
     return {
-        "mel": mels,
-        "audio": audios,  # List of tensors (variable length)
+        "audio": audios,
         "label": labels,
-        "domain": domains[0] if len(set(domains)) == 1 else domains,  # Single domain string if all same
+        "domain": domains[0] if len(set(domains)) == 1 else domains,
         "filepath": filepaths,
     }
 
 
-# Test the dataset
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
     
-    print("=" * 60)
-    print("DATASET TEST")
-    print("=" * 60)
-    
     data_root = "data/raw"
     
     if not Path(data_root).exists():
-        print(f"\nData directory not found: {data_root}")
-        print("Run data/downloads/download_esc50.py first")
+        print(f"Data directory not found: {data_root}")
         sys.exit(0)
     
     for split in ["train", "val", "test"]:
@@ -537,7 +313,7 @@ if __name__ == "__main__":
             data_root=data_root,
             split=split,
             target_duration=10.0,
-            return_raw_audio=True,  # Test raw audio mode
+            return_raw_audio=True,
         )
         
         if len(dataset) > 0:
@@ -546,10 +322,3 @@ if __name__ == "__main__":
             print(f"  Audio shape: {sample['audio'].shape}")
             print(f"  Label: {sample['label']}")
             print(f"  Domain: {sample['domain']}")
-            print(f"  File: {Path(sample['filepath']).name}")
-            
-            dist = dataset.get_class_distribution()
-            print(f"  Classes: {len(dist)}")
-            
-            domain_dist = dataset.get_domain_distribution()
-            print(f"  Domains: {domain_dist}")

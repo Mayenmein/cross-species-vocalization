@@ -9,8 +9,9 @@ import json
 import time
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict 
 from contextlib import nullcontext
+from tqdm import tqdm
 
 
 # ==================================================
@@ -211,10 +212,12 @@ def train_epoch(
     total_batches = len(loader)
     print(f"  Training on {total_batches} batches...")
     
-    for batch_idx, batch in enumerate(loader):
-        # Progress indicator every 10 batches
-        if batch_idx % 10 == 0:
-            print(f"  Batch {batch_idx}/{total_batches}")
+    # Create progress bar for training batches
+    pbar = tqdm(enumerate(loader), total=total_batches, desc="  Training", leave=False)
+    for batch_idx, batch in pbar:
+        # Update progress bar description with current loss
+        if len(losses) > 0:
+            pbar.set_postfix({"loss": f"{np.mean(losses):.4f}"})
         
         audio_list = batch["audio"]
         max_len = max(a.shape[0] for a in audio_list)
@@ -265,9 +268,12 @@ def validate(model, loader, criterion, device, domain="animal"):
     total_batches = len(loader)
     print(f"  Validating on {total_batches} batches...")
 
-    for batch_idx, batch in enumerate(loader):
-        if batch_idx % 10 == 0:
-            print(f"  Batch {batch_idx}/{total_batches}")
+    # Create progress bar for validation batches
+    pbar = tqdm(enumerate(loader), total=total_batches, desc="  Validating", leave=False)
+    for batch_idx, batch in pbar:
+        # Update progress bar description with current loss
+        if len(losses) > 0:
+            pbar.set_postfix({"loss": f"{np.mean(losses):.4f}"})
         
         audio_list = batch["audio"]
         max_len = max(a.shape[0] for a in audio_list)

@@ -44,16 +44,16 @@ def download(url: str, dest: Path):
 def verify(file_path: Path, expected_hash: str | None):
     """Verify checksum if provided"""
     if not expected_hash:
-        print("⚠️ No checksum provided, skipping verification")
+        print(" No checksum provided, skipping verification")
         return True
 
     computed = sha256(file_path)
     if computed != expected_hash:
-        print("❌ Checksum mismatch → corrupted download")
+        print("Checksum mismatch → corrupted download")
         file_path.unlink(missing_ok=True)
         return False
 
-    print("✅ Checksum verified")
+    print("Checksum verified")
     return True
 
 
@@ -66,7 +66,7 @@ def extract(zip_path: Path, extract_to: Path):
 def main():
     url = "https://github.com/karoldvl/ESC-50/archive/master.zip"
 
-    # ⚠️ ESC-50 does NOT publish official checksum → leave None
+    # ESC-50 does NOT publish official checksum → leave None
     expected_sha256 = None
 
     root = Path(__file__).resolve().parent.parent.parent
@@ -86,9 +86,9 @@ def main():
 
     audio_dir = extract_dir / "ESC-50-master" / "audio"
     if audio_dir.exists():
-        print(f"✅ Done: {len(list(audio_dir.glob('*.wav')))} files")
+        print(f"Done: {len(list(audio_dir.glob('*.wav')))} files")
     else:
-        print("⚠️ Unexpected structure")
+        print("Unexpected structure")
 
 
 if __name__ == "__main__":
