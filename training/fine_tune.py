@@ -1,10 +1,13 @@
 # training/fine_tune.py
 """
+DEPRECATED: This file is being replaced by lightning_module.py and run_training.py.
+Kept for reference but no longer used in active training.
+
 Fine-tuning pipeline with QLoRA.
 Phase 1: Pre-compute embeddings, train heads
 Phase 2: Unfreeze LoRA, train adapters + heads
 Phase 3: Domain-specific LoRA training
-"""
+""" 
 
 import torch
 import torch.nn as nn

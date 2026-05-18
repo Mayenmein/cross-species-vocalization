@@ -284,19 +284,49 @@ class CrossSpeciesDataset(torch.utils.data.Dataset):
 
 
 def collate_fn(batch, mel_augmenter=None):
-    """Collate function for batching."""
-    audios = [item["audio"] for item in batch]
-    labels = torch.stack([item["label"] for item in batch])
-    domains = [item["domain"] for item in batch]
-    filepaths = [item["filepath"] for item in batch]
+    # Check if the batch is already pre-filtered or if we need to group (Training mode)
+    # We inspect if all items share the exact same domain. If they don't, or if we are evaluating,
+    # we must preserve all samples.
+    domains_in_batch = set(item["domain"] for item in batch)
+    is_uniform_batch = len(domains_in_batch) == 1
+
+    # TRAINING MODE: If domains are mixed and we need to group by the largest domain
+    # (Only applies if your training dataloader feeds mixed data that needs structural grouping)
+    if not is_uniform_batch and getattr(batch[0].get("dataset", None), "split", "train") == "train":
+        domain_groups = {}
+        for item in batch:
+            domain = item["domain"]
+            if domain not in domain_groups:
+                domain_groups[domain] = []
+            domain_groups[domain].append(item)
+        
+        largest_domain = max(domain_groups.keys(), key=lambda d: len(domain_groups[d]))
+        selected_items = domain_groups[largest_domain]
+        domains_output = largest_domain  # Single string for uniform batch
+    else:
+        # VALIDATION / TEST MODE: Retain 100% of samples intact
+        selected_items = batch
+        domains_output = [item["domain"] for item in selected_items]  # List of strings
+
+    # Extract items safely
+    audios = [item["audio"] for item in selected_items]
+    labels = torch.stack([item["label"] for item in selected_items])
+    filepaths = [item["filepath"] for item in selected_items]
+    
+    # Pad audios uniformly to the maximum length present in this specific batch
+    max_len = max(a.shape[0] for a in audios)
+    padded_audios = []
+    for a in audios:
+        if a.shape[0] < max_len:
+            a = torch.nn.functional.pad(a, (0, max_len - a.shape[0]))
+        padded_audios.append(a)
     
     return {
-        "audio": audios,
+        "audio": padded_audios,
         "label": labels,
-        "domain": domains[0] if len(set(domains)) == 1 else domains,
+        "domain": domains_output,  # String (train) or List of Strings (val/test)
         "filepath": filepaths,
     }
-
 
 if __name__ == "__main__":
     import sys

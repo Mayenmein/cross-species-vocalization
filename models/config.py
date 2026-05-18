@@ -113,22 +113,22 @@ class TrainingConfig:
     log_dir: str = "logs"
 
     # Training
-    max_epochs: int = 45  # Total epochs (phase1+phase2 combined)
+    max_epochs: int = 100  # Total epochs (phase1+phase2 combined)
     learning_rate: float = 1e-4
     batch_size: int = 16
-    weight_decay: float = 0.1
+    weight_decay: float = 1e-2
     
     # Multi-stage learning
-    phase1_epochs: int = 20
-    phase2_epochs: int = 15
-    phase3_epochs: int = 10
+    phase1_epochs: int = 50
+    phase2_epochs: int = 30
+    phase3_epochs: int = 20
     
     early_stopping_patience: int = 3 
     use_wandb = True
 
-    phase1_lr: float = 5e-4
-    phase2_lr: float = 2e-4
-    phase3_learning_rate: float = 1e-4
+    phase1_lr: float = 1e-3   # Increased from 5e-4 (gives the head enough gradient push to escape flat lines)
+    phase2_lr: float = 2e-4   
+    phase3_lr: float = 5e-5
 
     gradient_clip_norm: float = 1.0
     use_amp: bool = True

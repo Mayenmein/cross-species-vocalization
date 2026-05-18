@@ -74,7 +74,7 @@ class CrossSpeciesVocalizationModel(nn.Module):
             whisper_size=config.whisper_size,
             lora_config=None
         )
-        
+        self.ln_post = nn.LayerNorm(config.encoder_dim)
         # Print trainable parameters
         trainable = sum(p.numel() for p in self.encoder.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.encoder.parameters())
@@ -137,8 +137,12 @@ class CrossSpeciesVocalizationModel(nn.Module):
         else:
             encoded = outputs
         
-        # Mean pooling over time dimension (simplest and most effective)
+        # Mean pooling over time dimension
         pooled = encoded.mean(dim=1)  # [batch, dim]
+        
+        # ADD THE CORRECTION HERE:
+        # Standardize the pooled vector to zero-mean and unit-variance
+        pooled = self.ln_post(pooled)
         
         # Apply domain adapter after pooling
         pooled = self.domain_adapters[domain](pooled)
